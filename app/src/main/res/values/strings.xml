@@ -1,0 +1,3 @@
+<resources>
+    <string name="service_desc">Személyes teszt: a képernyőn látható szövegeket naplózza a telefon belső tárolójába. Hálózatot nem használ.</string>
+</resources>
