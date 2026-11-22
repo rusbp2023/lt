@@ -71,11 +71,18 @@ class MainActivity : Activity() {
         return s.contains("$packageName/") && s.contains("CaptionService")
     }
 
+    private var lastShown = ""
+
     private fun refresh() {
         status.text = if (serviceOn()) "● Szolgáltatás: BE" else "○ Szolgáltatás: KI"
         val t = text()
-        out.text = if (t.isBlank()) "(még üres — kapcsold be a szolgáltatást és az Élő feliratot)" else t.takeLast(6000)
-        scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        val shown = if (t.isBlank()) "(még üres — kapcsold be a szolgáltatást és az Élő feliratot)" else t.takeLast(30000)
+        if (shown == lastShown) return
+        val child = scroll.getChildAt(0)
+        val atBottom = child == null || scroll.scrollY + scroll.height >= child.height - 120
+        lastShown = shown
+        out.text = shown
+        if (atBottom) scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 
     private fun copy() {
