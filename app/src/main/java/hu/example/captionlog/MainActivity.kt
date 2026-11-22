@@ -1,19 +1,38 @@
 package hu.example.captionlog
 
 import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.provider.MediaStore
 import android.provider.Settings
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
-import java.io.File
+import android.widget.Toast
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class MainActivity : Activity() {
 
     private lateinit var out: TextView
-    private val logFile get() = File(filesDir, "log.txt")
+    private lateinit var scroll: ScrollView
+    private val handler = Handler(Looper.getMainLooper())
+    private val tick = object : Runnable {
+        override fun run() { refresh(); handler.postDelayed(this, 2000) }
+    }
+
+    private fun text(): String {
+        val f = CaptionService.file(this)
+        return if (f.exists()) f.readText() else ""
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -27,51 +46,60 @@ class MainActivity : Activity() {
                 setOnClickListener { action() }
             })
         }
-        root.addView(TextView(this).apply {
-            text = "1) Kisegítő lehetőségek bekapcsolása: CaptionLog\n" +
-                "2) Live Caption be, nyisd meg a TikTok live-ot ~1 percre\n" +
-                "3) Vissza ide: Frissítés, majd Napló megosztása"
-        })
         button("Kisegítő beállítások megnyitása") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
-        button("Frissítés") { refresh() }
-        button("Napló megosztása") { share() }
-        button("Napló törlése") {
-            logFile.delete()
-            CaptionService.seen.clear()
-            refresh()
-        }
-        out = TextView(this).apply { textSize = 12f }
-        root.addView(ScrollView(this).apply { addView(out) },
-            LinearLayout.LayoutParams(-1, 0, 1f))
+        button("Másolás vágólapra") { copy() }
+        button("Megosztás") { share() }
+        button("Mentés TXT-be (Letöltések)") { exportTxt() }
+        button("Törlés") { CaptionService.clear(this); refresh() }
+        out = TextView(this).apply { textSize = 14f; setTextIsSelectable(true) }
+        scroll = ScrollView(this).apply { addView(out) }
+        root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
     }
 
-    override fun onResume() {
-        super.onResume()
-        refresh()
-    }
+    override fun onResume() { super.onResume(); handler.post(tick) }
+    override fun onPause() { super.onPause(); handler.removeCallbacks(tick) }
 
     private fun refresh() {
-        if (!logFile.exists()) { out.text = "(még üres)"; return }
-        val rows = logFile.readLines().map { it.split('\t') }.filter { it.size >= 4 }
-        val sb = StringBuilder()
-        rows.groupBy { it[1] }.entries.sortedByDescending { it.value.size }.forEach { (pkg, list) ->
-            sb.append("■ $pkg  (${list.size} sor)\n")
-            list.takeLast(3).forEach { sb.append("   [${it[2]}] ${it[3].take(80)}\n") }
-            sb.append('\n')
-        }
-        out.text = sb.toString()
+        val t = text()
+        out.text = if (t.isBlank()) "(még üres — kapcsold be a szolgáltatást és az Élő feliratot)" else t.takeLast(6000)
+        scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+    }
+
+    private fun copy() {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("felirat", text()))
+        Toast.makeText(this, "Kimásolva", Toast.LENGTH_SHORT).show()
     }
 
     private fun share() {
-        if (!logFile.exists()) return
-        val text = logFile.readText().takeLast(60000)
+        val t = text()
+        if (t.isBlank()) return
         startActivity(Intent.createChooser(
             Intent(Intent.ACTION_SEND).apply {
                 type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT, text)
-            }, "Napló megosztása"))
+                putExtra(Intent.EXTRA_TEXT, t.takeLast(100000))
+            }, "Megosztás"))
+    }
+
+    private fun exportTxt() {
+        val t = text()
+        if (t.isBlank()) { Toast.makeText(this, "Nincs mit menteni", Toast.LENGTH_SHORT).show(); return }
+        if (Build.VERSION.SDK_INT < 29) {
+            Toast.makeText(this, "Ehhez Android 10+ kell, használd a Megosztást", Toast.LENGTH_LONG).show()
+            return
+        }
+        val name = "felirat_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".txt"
+        val v = ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name)
+            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
+        }
+        val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
+        if (uri != null) {
+            contentResolver.openOutputStream(uri)?.use { it.write(t.toByteArray(Charsets.UTF_8)) }
+            Toast.makeText(this, "Mentve a Letöltések mappába: $name", Toast.LENGTH_LONG).show()
+        }
     }
 }
