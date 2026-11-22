@@ -36,12 +36,20 @@ class CaptionService : AccessibilityService() {
     private var savePending = false
     private val scanRun = Runnable { scanPending = false; scan() }
     private val saveRun = Runnable { savePending = false; save() }
+    private val pollRun = object : Runnable {
+        override fun run() {
+            scan()
+            handler.postDelayed(this, 1000)
+        }
+    }
 
     override fun onServiceConnected() {
         val f = file(this)
         prior = if (f.exists()) f.readText().trimEnd() else ""
         if (prior.isNotEmpty()) prior += "\n\n"
         seenGen = generation
+        handler.removeCallbacks(pollRun)
+        handler.postDelayed(pollRun, 1000)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -56,6 +64,7 @@ class CaptionService : AccessibilityService() {
     override fun onDestroy() {
         handler.removeCallbacks(scanRun)
         handler.removeCallbacks(saveRun)
+        handler.removeCallbacks(pollRun)
         save()
         super.onDestroy()
     }
@@ -96,14 +105,18 @@ class CaptionService : AccessibilityService() {
         val c = cur.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (c.isEmpty()) return
         var chosen = 0
-        val maxM = minOf(c.size, words.size, 80)
+        val maxM = minOf(c.size, words.size, 1000)
         for (m in maxM downTo 1) {
             val off = words.size - m
-            var eq = 0
-            for (i in 0 until m) if (words[off + i] == c[i]) eq++
-            val ok = (eq == m && (m >= 2 || c[0].length >= 4)) ||
-                (m >= 4 && eq * 4 >= m * 3)
-            if (ok) { chosen = m; break }
+            val allowed = if (m >= 4) m / 4 else 0
+            var miss = 0
+            for (i in 0 until m) {
+                if (words[off + i] != c[i]) {
+                    miss++
+                    if (miss > allowed) break
+                }
+            }
+            if (miss <= allowed && (m >= 2 || c[0].length >= 4)) { chosen = m; break }
         }
         if (chosen > 0) {
             repeat(chosen) { words.removeAt(words.size - 1) }
