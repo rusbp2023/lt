@@ -5,12 +5,20 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
 import android.content.Intent
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import android.provider.Settings
+import android.text.Spanned
+import android.text.SpannableStringBuilder
+import android.text.TextPaint
+import android.text.method.LinkMovementMethod
+import android.text.style.BackgroundColorSpan
+import android.text.style.ClickableSpan
+import android.view.View
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -18,6 +26,7 @@ import android.widget.TextView
 import android.widget.Toast
 import java.text.SimpleDateFormat
 import java.util.Date
+import java.util.LinkedHashSet
 import java.util.Locale
 
 class MainActivity : Activity() {
@@ -25,39 +34,82 @@ class MainActivity : Activity() {
     private lateinit var out: TextView
     private lateinit var status: TextView
     private lateinit var scroll: ScrollView
+    private lateinit var sendBtn: Button
+
+    private val prefs by lazy { getSharedPreferences("p", MODE_PRIVATE) }
     private val handler = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
         override fun run() { refresh(); handler.postDelayed(this, 2000) }
     }
+
+    private val selected = LinkedHashSet<String>()
+    private val wordRe = Regex("[\\p{L}\\p{N}]+(?:-[\\p{L}\\p{N}]+)*")
+    private val stampRe = Regex("^\\[\\d\\d:\\d\\d:\\d\\d]\\s*")
+    private var textSizeSp = 20f
+    private var lastShown = ""
+    private var forceRender = false
 
     private fun text(): String {
         val f = CaptionService.file(this)
         return if (f.exists()) f.readText() else ""
     }
 
+    private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_SHORT).show()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        textSizeSp = prefs.getFloat("size", 20f)
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(32, 64, 32, 32)
+            setPadding(24, 48, 24, 24)
         }
-        fun button(label: String, action: () -> Unit) {
-            root.addView(Button(this).apply {
-                text = label
-                setOnClickListener { action() }
-            })
+        fun btn(label: String, action: () -> Unit): Button {
+            val b = Button(this)
+            b.text = label
+            b.isAllCaps = false
+            b.setOnClickListener { action() }
+            return b
         }
-        status = TextView(this).apply { textSize = 18f; setPadding(0, 0, 0, 24) }
+        fun row(vararg bs: Button) {
+            val r = LinearLayout(this)
+            r.orientation = LinearLayout.HORIZONTAL
+            for (b in bs) r.addView(b, LinearLayout.LayoutParams(0, -2, 1f))
+            root.addView(r)
+        }
+
+        status = TextView(this)
+        status.textSize = 18f
         root.addView(status)
-        button("Kisegítő beállítások megnyitása") {
+
+        row(btn("Kisegítő beállítások") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
-        button("Másolás vágólapra") { copy() }
-        button("Megosztás") { share() }
-        button("Mentés TXT-be (Letöltések)") { exportTxt() }
-        button("Törlés") { CaptionService.clear(this); refresh() }
-        out = TextView(this).apply { textSize = 14f; setTextIsSelectable(true) }
-        scroll = ScrollView(this).apply { addView(out) }
+        })
+        row(
+            btn("A−") { setSize(textSizeSp - 2f) },
+            btn("A+") { setSize(textSizeSp + 2f) },
+            btn("Kijelölés törlése") { selected.clear(); forceRender = true; refresh() }
+        )
+        sendBtn = btn("") { sendToChatGpt() }
+        row(sendBtn)
+        row(
+            btn("Másolás") { copy() },
+            btn("Megosztás") { share() },
+            btn("TXT") { exportTxt() }
+        )
+        row(btn("Törlés") {
+            CaptionService.clear(this)
+            selected.clear()
+            forceRender = true
+            refresh()
+        })
+
+        out = TextView(this)
+        out.textSize = textSizeSp
+        out.movementMethod = LinkMovementMethod.getInstance()
+        out.highlightColor = Color.TRANSPARENT
+        scroll = ScrollView(this)
+        scroll.addView(out)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
     }
@@ -65,54 +117,113 @@ class MainActivity : Activity() {
     override fun onResume() { super.onResume(); handler.post(tick) }
     override fun onPause() { super.onPause(); handler.removeCallbacks(tick) }
 
+    private fun setSize(v: Float) {
+        textSizeSp = v.coerceIn(12f, 44f)
+        prefs.edit().putFloat("size", textSizeSp).apply()
+        out.textSize = textSizeSp
+    }
+
     private fun serviceOn(): Boolean {
         val s = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
             ?: return false
         return s.contains("$packageName/") && s.contains("CaptionService")
     }
 
-    private var lastShown = ""
+    private fun toggle(k: String) {
+        if (!selected.add(k)) selected.remove(k)
+        forceRender = true
+        refresh()
+    }
+
+    private fun render(t: String) {
+        val sb = SpannableStringBuilder(t)
+        for (m in wordRe.findAll(t)) {
+            val k = m.value.lowercase()
+            val s = m.range.first
+            val e = m.range.last + 1
+            sb.setSpan(object : ClickableSpan() {
+                override fun onClick(widget: View) { toggle(k) }
+                override fun updateDrawState(ds: TextPaint) { ds.isUnderlineText = false }
+            }, s, e, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            if (k in selected) {
+                sb.setSpan(BackgroundColorSpan(Color.parseColor("#FFE082")), s, e,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+        }
+        out.text = sb
+    }
 
     private fun refresh() {
         status.text = if (serviceOn()) "● Szolgáltatás: BE" else "○ Szolgáltatás: KI"
+        sendBtn.text = "Küldés ChatGPT-nek (" + selected.size + " szó)"
         val t = text()
-        val shown = if (t.isBlank()) "(még üres — kapcsold be a szolgáltatást és az Élő feliratot)" else t.takeLast(30000)
-        if (shown == lastShown) return
+        val shown = if (t.isBlank()) "(még üres — kapcsold be a szolgáltatást és az Élő feliratot)"
+        else t.takeLast(30000)
+        if (shown == lastShown && !forceRender) return
+        forceRender = false
         val child = scroll.getChildAt(0)
         val atBottom = child == null || scroll.scrollY + scroll.height >= child.height - 120
         lastShown = shown
-        out.text = shown
+        render(shown)
         if (atBottom) scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+    }
+
+    private fun buildPrompt(): String {
+        val words = selected.joinToString("\n") { "- $it" }
+        val context = text().lines()
+            .map { it.replace(stampRe, "").trim() }
+            .filter { ln -> ln.isNotEmpty() && wordRe.findAll(ln).any { it.value.lowercase() in selected } }
+            .joinToString("\n\n")
+        return "Egy orosz nyelvű, automatikus beszédfelismerésből származó szövegből " +
+            "(lehetnek benne hibák) kijelöltem néhány szót. Add meg mindegyiknek az orosz " +
+            "szótári alakját (főnév: alanyeset egyes szám; ige: infinitívusz; melléknév: " +
+            "hímnemű alanyeset egyes szám) és a magyar szótári alakját a szövegkörnyezet " +
+            "alapján. Ha több kijelölt szó ugyanannak a szónak a ragozott alakja, az csak " +
+            "egyszer szerepeljen. Csak egy egyszerű listát adj vissza, soronként egy szóval, " +
+            "ebben a formában: orosz szótári alak magyar szótári alak (a kettő között csak " +
+            "egy szóköz legyen, kötőjel, gondolatjel vagy más jel nélkül). Ne írj hozzá " +
+            "magyarázatot, táblázatot vagy más szöveget.\n\n" +
+            "Kijelölt szavak:\n" + words + "\n\n" +
+            "Szöveg (a szavakat tartalmazó részek):\n" + context
+    }
+
+    private fun sendToChatGpt() {
+        if (selected.isEmpty()) { toast("Előbb koppints rá néhány szóra"); return }
+        val prompt = buildPrompt()
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("kérés", prompt))
+        val i = Intent(Intent.ACTION_SEND)
+        i.type = "text/plain"
+        i.putExtra(Intent.EXTRA_TEXT, prompt)
+        startActivity(Intent.createChooser(i, "Küldés ChatGPT-nek"))
     }
 
     private fun copy() {
         val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
         cm.setPrimaryClip(ClipData.newPlainText("felirat", text()))
-        Toast.makeText(this, "Kimásolva", Toast.LENGTH_SHORT).show()
+        toast("Kimásolva")
     }
 
     private fun share() {
         val t = text()
         if (t.isBlank()) return
-        startActivity(Intent.createChooser(
-            Intent(Intent.ACTION_SEND).apply {
-                type = "text/plain"
-                putExtra(Intent.EXTRA_TEXT, t.takeLast(100000))
-            }, "Megosztás"))
+        val i = Intent(Intent.ACTION_SEND)
+        i.type = "text/plain"
+        i.putExtra(Intent.EXTRA_TEXT, t.takeLast(100000))
+        startActivity(Intent.createChooser(i, "Megosztás"))
     }
 
     private fun exportTxt() {
         val t = text()
-        if (t.isBlank()) { Toast.makeText(this, "Nincs mit menteni", Toast.LENGTH_SHORT).show(); return }
+        if (t.isBlank()) { toast("Nincs mit menteni"); return }
         if (Build.VERSION.SDK_INT < 29) {
             Toast.makeText(this, "Ehhez Android 10+ kell, használd a Megosztást", Toast.LENGTH_LONG).show()
             return
         }
         val name = "felirat_" + SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date()) + ".txt"
-        val v = ContentValues().apply {
-            put(MediaStore.Downloads.DISPLAY_NAME, name)
-            put(MediaStore.Downloads.MIME_TYPE, "text/plain")
-        }
+        val v = ContentValues()
+        v.put(MediaStore.Downloads.DISPLAY_NAME, name)
+        v.put(MediaStore.Downloads.MIME_TYPE, "text/plain")
         val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
         if (uri != null) {
             contentResolver.openOutputStream(uri)?.use { it.write(t.toByteArray(Charsets.UTF_8)) }
