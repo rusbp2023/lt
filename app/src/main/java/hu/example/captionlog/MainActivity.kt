@@ -23,6 +23,7 @@ import java.util.Locale
 class MainActivity : Activity() {
 
     private lateinit var out: TextView
+    private lateinit var status: TextView
     private lateinit var scroll: ScrollView
     private val handler = Handler(Looper.getMainLooper())
     private val tick = object : Runnable {
@@ -46,6 +47,8 @@ class MainActivity : Activity() {
                 setOnClickListener { action() }
             })
         }
+        status = TextView(this).apply { textSize = 18f; setPadding(0, 0, 0, 24) }
+        root.addView(status)
         button("Kisegítő beállítások megnyitása") {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
@@ -62,7 +65,14 @@ class MainActivity : Activity() {
     override fun onResume() { super.onResume(); handler.post(tick) }
     override fun onPause() { super.onPause(); handler.removeCallbacks(tick) }
 
+    private fun serviceOn(): Boolean {
+        val s = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+            ?: return false
+        return s.contains("$packageName/") && s.contains("CaptionService")
+    }
+
     private fun refresh() {
+        status.text = if (serviceOn()) "● Szolgáltatás: BE" else "○ Szolgáltatás: KI"
         val t = text()
         out.text = if (t.isBlank()) "(még üres — kapcsold be a szolgáltatást és az Élő feliratot)" else t.takeLast(6000)
         scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }

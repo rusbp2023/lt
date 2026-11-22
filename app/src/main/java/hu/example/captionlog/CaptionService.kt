@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.view.accessibility.AccessibilityEvent
+import android.widget.Toast
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -52,6 +53,14 @@ class CaptionService : AccessibilityService() {
         seenGen = generation
         handler.removeCallbacks(pollRun)
         handler.postDelayed(pollRun, 1000)
+        Toast.makeText(this, "CaptionLog: BE", Toast.LENGTH_SHORT).show()
+    }
+
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        handler.removeCallbacks(pollRun)
+        save()
+        Toast.makeText(this, "CaptionLog: KI", Toast.LENGTH_SHORT).show()
+        return super.onUnbind(intent)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
