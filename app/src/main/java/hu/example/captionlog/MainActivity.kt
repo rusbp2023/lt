@@ -180,8 +180,8 @@ class MainActivity : Activity() {
             "hímnemű alanyeset egyes szám) és a magyar szótári alakját a szövegkörnyezet " +
             "alapján. Ha több kijelölt szó ugyanannak a szónak a ragozott alakja, az csak " +
             "egyszer szerepeljen. Csak egy egyszerű listát adj vissza, soronként egy szóval, " +
-            "ebben a formában: orosz szótári alak magyar szótári alak (a kettő között csak " +
-            "egy szóköz legyen, kötőjel, gondolatjel vagy más jel nélkül). Ne írj hozzá " +
+            "ebben a formában: orosz szótári alak magyar szótári alak (a kettő között " +
+            "pontosan 10 szóköz legyen, kötőjel, gondolatjel vagy más jel nélkül). Ne írj hozzá " +
             "magyarázatot, táblázatot vagy más szöveget.\n\n" +
             "Kijelölt szavak:\n" + words + "\n\n" +
             "Szöveg (a szavakat tartalmazó részek):\n" + context
