@@ -27,6 +27,8 @@ class CaptionService : AccessibilityService() {
     }
 
     private val words = ArrayList<String>()
+    private val keys = ArrayList<String>()
+    private val bracketOnly = Regex("^\\[[^\\]]*]$")
     private var prior = ""
     private var seenGen = 0
     private var last = ""
@@ -72,7 +74,7 @@ class CaptionService : AccessibilityService() {
     private fun scan() {
         try {
             if (seenGen != generation) {
-                words.clear(); prior = ""; last = ""; seenGen = generation
+                words.clear(); keys.clear(); prior = ""; last = ""; seenGen = generation
             }
             val ws = windows
             val roots = if (ws.isNullOrEmpty()) listOfNotNull(rootInActiveWindow)
@@ -85,6 +87,7 @@ class CaptionService : AccessibilityService() {
             }
             val cur = texts.joinToString(" ").trim()
             if (cur.isEmpty()) { last = ""; return }
+            if (bracketOnly.matches(cur)) return  // pl. [no English speech detected]
             if (cur == last) return
             last = cur
             merge(cur)
@@ -96,14 +99,22 @@ class CaptionService : AccessibilityService() {
         }
     }
 
+    private fun key(w: String): String {
+        val k = w.lowercase().filter { it.isLetterOrDigit() }
+        return if (k.isEmpty()) w else k
+    }
+
     /**
-     * A felirat ablak csúszik és javítgatja a végét. Megkeressük, hol fedi át az
-     * új szöveg az eddigi átirat végét, az átfedést az új (javított) szavakra
-     * cseréljük, és csak a tényleg új szavakat fűzzük hozzá.
+     * A felirat szövege az egész megszólalást tartalmazza, és a vége (néha az
+     * eleje is) javítgatódik. Az összehasonlításnál a kis/nagybetűt és az
+     * írásjeleket figyelmen kívül hagyjuk. Megkeressük, hol fedi át az új szöveg
+     * az átirat végét, az átfedést az új szavakra cseréljük, és csak az újat
+     * fűzzük hozzá.
      */
     private fun merge(cur: String) {
         val c = cur.split(Regex("\\s+")).filter { it.isNotEmpty() }
         if (c.isEmpty()) return
+        val ck = c.map { key(it) }
         var chosen = 0
         val maxM = minOf(c.size, words.size, 1000)
         for (m in maxM downTo 1) {
@@ -111,19 +122,24 @@ class CaptionService : AccessibilityService() {
             val allowed = if (m >= 4) m / 4 else 0
             var miss = 0
             for (i in 0 until m) {
-                if (words[off + i] != c[i]) {
+                if (keys[off + i] != ck[i]) {
                     miss++
                     if (miss > allowed) break
                 }
             }
-            if (miss <= allowed && (m >= 2 || c[0].length >= 4)) { chosen = m; break }
+            if (miss <= allowed && (m >= 2 || ck[0].length >= 4)) { chosen = m; break }
         }
         if (chosen > 0) {
-            repeat(chosen) { words.removeAt(words.size - 1) }
+            repeat(chosen) {
+                words.removeAt(words.size - 1)
+                keys.removeAt(keys.size - 1)
+            }
         } else {
             words.add("\n[" + fmt.format(Date()) + "]")
+            keys.add("\n")
         }
         words.addAll(c)
+        keys.addAll(ck)
     }
 
     private fun save() {
