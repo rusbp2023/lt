@@ -240,20 +240,83 @@ class MainActivity : Activity() {
         return snippets.joinToString("\n")
     }
 
+    private fun isBreak(w: String): Boolean =
+        isEnd(w) || w.endsWith(",") || w.endsWith(";") || w.endsWith(":")
+
+    /**
+     * Szétválogatja a kijelölést: az egymás mellett (mondat- vagy tagmondathatár
+     * nélkül) kijelölt szavak egy-egy szókapcsolatot alkotnak, a többi önálló szó.
+     */
+    private fun splitSelection(): Pair<List<String>, List<String>> {
+        val entries = text().lines()
+            .map { it.replace(stampRe, "").trim() }
+            .filter { it.isNotEmpty() }
+        val phrases = LinkedHashSet<String>()
+        val phraseKeys = HashSet<String>()
+        val single = HashSet<String>()
+        for (e in entries) {
+            val t = e.split(Regex("\\s+"))
+            var i = 0
+            while (i < t.size) {
+                val k = tokKey(t[i])
+                if (k in selected) {
+                    val run = ArrayList<String>()
+                    run.add(k)
+                    var j = i
+                    while (!isBreak(t[j]) && j + 1 < t.size && tokKey(t[j + 1]) in selected) {
+                        j++
+                        run.add(tokKey(t[j]))
+                    }
+                    if (run.size >= 2) {
+                        phrases.add(run.joinToString(" "))
+                        phraseKeys.addAll(run)
+                    } else {
+                        single.add(k)
+                    }
+                    i = j + 1
+                } else {
+                    i++
+                }
+            }
+        }
+        val singles = selected.filter { it !in phraseKeys || it in single }
+        return Pair(singles, phrases.toList())
+    }
+
     private fun buildPrompt(): String {
-        val words = selected.joinToString("\n") { "- $it" }
+        val (singles, phrases) = splitSelection()
         val context = buildContext()
-        return "Egy orosz nyelvű, automatikus beszédfelismerésből származó szövegből " +
+        val sb = StringBuilder()
+        sb.append("Egy orosz nyelvű, automatikus beszédfelismerésből származó szövegből " +
             "(lehetnek benne hibák) kijelöltem néhány szót. Add meg mindegyiknek az orosz " +
             "szótári alakját (főnév: alanyeset egyes szám; ige: infinitívusz; melléknév: " +
             "hímnemű alanyeset egyes szám) és a magyar szótári alakját a szövegkörnyezet " +
             "alapján. Ha több kijelölt szó ugyanannak a szónak a ragozott alakja, az csak " +
-            "egyszer szerepeljen. Csak egy egyszerű listát adj vissza, soronként egy szóval, " +
+            "egyszer szerepeljen. ")
+        if (phrases.isNotEmpty()) {
+            sb.append("Az egymás mellett kijelölt szavaknál vizsgáld meg, hogy állandósult " +
+                "kifejezést (szókapcsolatot) alkotnak-e: ha igen, a kifejezést egy tételként add " +
+                "meg (az orosz szótári alakját és a magyar megfelelőjét, az orosz kifejezésen " +
+                "belül a szavak között egy szóközzel); ha nem alkotnak kifejezést, a szavakat " +
+                "add meg külön-külön. ")
+        }
+        sb.append("Csak egy egyszerű listát adj vissza, soronként egy tétellel, " +
             "ebben a formában: orosz szótári alak magyar szótári alak (a kettő között " +
             "pontosan 10 szóköz legyen, kötőjel, gondolatjel vagy más jel nélkül). Ne írj hozzá " +
-            "magyarázatot, táblázatot vagy más szöveget.\n\n" +
-            "Kijelölt szavak:\n" + words + "\n\n" +
-            "Szövegkörnyezet (a kijelölt szavak körüli mondatok):\n" + context
+            "magyarázatot, táblázatot vagy más szöveget.\n\n")
+        if (singles.isNotEmpty()) {
+            sb.append("Kijelölt szavak:\n")
+            sb.append(singles.joinToString("\n") { "- $it" })
+            sb.append("\n\n")
+        }
+        if (phrases.isNotEmpty()) {
+            sb.append("Egymás mellett kijelölt szavak (lehet, hogy kifejezés):\n")
+            sb.append(phrases.joinToString("\n") { "- $it" })
+            sb.append("\n\n")
+        }
+        sb.append("Szövegkörnyezet (a kijelölt szavak körüli mondatok):\n")
+        sb.append(context)
+        return sb.toString()
     }
 
     private fun sendToChatGpt() {
