@@ -44,7 +44,7 @@ class MainActivity : Activity() {
 
     private val selected = LinkedHashSet<String>()
     private val wordRe = Regex("[\\p{L}\\p{N}]+(?:-[\\p{L}\\p{N}]+)*")
-    private val stampRe = Regex("^\\[\\d\\d:\\d\\d:\\d\\d]\\s*")
+    private val stampRe = Regex("^\\[(?:\\d{4}-\\d\\d-\\d\\d )?\\d\\d:\\d\\d:\\d\\d]\\s*")
     private var textSizeSp = 20f
     private var lastShown = ""
     private var forceRender = false
@@ -168,12 +168,81 @@ class MainActivity : Activity() {
         if (atBottom) scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 
+    private fun isEnd(w: String): Boolean =
+        w.endsWith(".") || w.endsWith("?") || w.endsWith("!") || w.endsWith("…")
+
+    private fun tokKey(w: String): String = wordRe.find(w)?.value?.lowercase() ?: ""
+
+    /**
+     * Minden kijelölt szónak a legutóbbi 2 előfordulásához: a mondata, az előtte
+     * és az utána lévő mondat, de a szó előtt és után legfeljebb 30-30 szó.
+     * Az átfedő részeket összevonja.
+     */
+    private fun buildContext(): String {
+        val toks = text().lines()
+            .map { it.replace(stampRe, "").trim() }
+            .filter { it.isNotEmpty() }
+            .map { e -> e.split(Regex("\\s+")) }
+        val occ = HashMap<Int, ArrayList<Int>>()
+        for (k in selected) {
+            var found = 0
+            var ei = toks.size - 1
+            while (ei >= 0 && found < 2) {
+                val t = toks[ei]
+                var ti = t.size - 1
+                while (ti >= 0 && found < 2) {
+                    if (tokKey(t[ti]) == k) {
+                        occ.getOrPut(ei) { ArrayList() }.add(ti)
+                        found++
+                    }
+                    ti--
+                }
+                ei--
+            }
+        }
+        val snippets = ArrayList<String>()
+        for (ei in occ.keys.sorted()) {
+            val t = toks[ei]
+            val ranges = ArrayList<IntArray>()
+            for (i in occ[ei]!!) {
+                var s = i
+                while (s > 0 && !isEnd(t[s - 1])) s--
+                var ps = s
+                if (s > 0) {
+                    ps = s - 1
+                    while (ps > 0 && !isEnd(t[ps - 1])) ps--
+                }
+                var e = i
+                while (e < t.size - 1 && !isEnd(t[e])) e++
+                var ne = e
+                if (e < t.size - 1) {
+                    ne = e + 1
+                    while (ne < t.size - 1 && !isEnd(t[ne])) ne++
+                }
+                ranges.add(intArrayOf(maxOf(ps, i - 30), minOf(ne, i + 30)))
+            }
+            ranges.sortBy { it[0] }
+            val merged = ArrayList<IntArray>()
+            for (r in ranges) {
+                val l = if (merged.isEmpty()) null else merged[merged.size - 1]
+                if (l != null && r[0] <= l[1] + 1) {
+                    l[1] = maxOf(l[1], r[1])
+                } else {
+                    merged.add(r)
+                }
+            }
+            for (r in merged) {
+                val pre = if (r[0] > 0 && !isEnd(t[r[0] - 1])) "… " else ""
+                val post = if (r[1] < t.size - 1 && !isEnd(t[r[1]])) " …" else ""
+                snippets.add(pre + t.subList(r[0], r[1] + 1).joinToString(" ") + post)
+            }
+        }
+        return snippets.joinToString("\n")
+    }
+
     private fun buildPrompt(): String {
         val words = selected.joinToString("\n") { "- $it" }
-        val context = text().lines()
-            .map { it.replace(stampRe, "").trim() }
-            .filter { ln -> ln.isNotEmpty() && wordRe.findAll(ln).any { it.value.lowercase() in selected } }
-            .joinToString("\n\n")
+        val context = buildContext()
         return "Egy orosz nyelvű, automatikus beszédfelismerésből származó szövegből " +
             "(lehetnek benne hibák) kijelöltem néhány szót. Add meg mindegyiknek az orosz " +
             "szótári alakját (főnév: alanyeset egyes szám; ige: infinitívusz; melléknév: " +
@@ -184,7 +253,7 @@ class MainActivity : Activity() {
             "pontosan 10 szóköz legyen, kötőjel, gondolatjel vagy más jel nélkül). Ne írj hozzá " +
             "magyarázatot, táblázatot vagy más szöveget.\n\n" +
             "Kijelölt szavak:\n" + words + "\n\n" +
-            "Szöveg (a szavakat tartalmazó részek):\n" + context
+            "Szövegkörnyezet (a kijelölt szavak körüli mondatok):\n" + context
     }
 
     private fun sendToChatGpt() {
