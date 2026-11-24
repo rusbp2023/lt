@@ -7,6 +7,7 @@ import java.io.File
 object WordStore {
     private val sepRe = Regex("\\s{2,}|\\t|\\s*\\|\\s*|\\s+[–—-]\\s+")
     private val bulletRe = Regex("^\\s*(?:[-•–·*]+|\\d+[.)])\\s*")
+    private val markerRe = Regex("^(?:\\d+[.)]|[-•–—·*|:]+)$")
     private val cyr = Regex("[\\u0400-\\u04FF]")
     private val spaces = Regex("\\s+")
 
@@ -23,29 +24,48 @@ object WordStore {
 
     private fun norm(s: String) = s.replace(spaces, " ").trim()
 
-    /** Egy sor szétszedése: orosz rész + magyar rész. Nem értelmezhető sorra null. */
-    fun parseLine(raw: String): Pair<String, String>? {
+    /**
+     * Cirill szavak sora = orosz rész, utána a nem cirill szavak sora = magyar rész.
+     * Így egyetlen sorba folyt, több tételt tartalmazó szöveg is szétszedhető.
+     */
+    private fun parseRuns(s: String): List<Pair<String, String>> {
+        val toks = s.split(spaces).filter { it.isNotEmpty() }
+        val out = ArrayList<Pair<String, String>>()
+        var i = 0
+        while (i < toks.size) {
+            while (i < toks.size && !cyr.containsMatchIn(toks[i])) i++
+            if (i >= toks.size) break
+            val ru = ArrayList<String>()
+            while (i < toks.size && cyr.containsMatchIn(toks[i])) { ru.add(toks[i]); i++ }
+            val hu = ArrayList<String>()
+            while (i < toks.size && !cyr.containsMatchIn(toks[i])) { hu.add(toks[i]); i++ }
+            // a következő tétel sorszáma/felsorolásjele ne a magyar rész végére kerüljön
+            while (i < toks.size && hu.isNotEmpty() && markerRe.matches(hu[hu.size - 1])) {
+                hu.removeAt(hu.size - 1)
+            }
+            while (hu.isNotEmpty() && markerRe.matches(hu[0])) hu.removeAt(0)
+            if (hu.isNotEmpty()) out.add(Pair(ru.joinToString(" "), hu.joinToString(" ")))
+        }
+        return out
+    }
+
+    /** Egy sorból 0, 1 vagy több (orosz, magyar) tételt ad. */
+    fun parseLine(raw: String): List<Pair<String, String>> {
         var s = raw.replace("*", "").replace("`", "").trim()
         s = s.replace(bulletRe, "").trim()
-        if (s.isEmpty()) return null
+        if (s.isEmpty()) return emptyList()
 
         // 1) elválasztó alapján (több szóköz, tabulátor, |, szóközök közti kötőjel)
         val m = sepRe.find(s)
         if (m != null) {
             val ru = s.substring(0, m.range.first).trim()
             val hu = s.substring(m.range.last + 1).trim()
-            if (ru.isNotEmpty() && hu.isNotEmpty() && cyr.containsMatchIn(ru)) {
-                return Pair(norm(ru), norm(hu))
+            if (ru.isNotEmpty() && hu.isNotEmpty() && cyr.containsMatchIn(ru) && !cyr.containsMatchIn(hu)) {
+                return listOf(Pair(norm(ru), norm(hu)))
             }
         }
-        // 2) tartalék: az orosz rész a cirill szavak sora, utána jön a magyar
-        val toks = s.split(spaces).filter { it.isNotEmpty() }
-        var n = 0
-        while (n < toks.size && cyr.containsMatchIn(toks[n])) n++
-        if (n >= 1 && n < toks.size) {
-            return Pair(toks.subList(0, n).joinToString(" "), toks.subList(n, toks.size).joinToString(" "))
-        }
-        return null
+        // 2) tartalék: cirill / nem cirill szakaszok váltakozása
+        return parseRuns(s)
     }
 
     /** Hozzáfűzi az új tételeket; a már meglévő orosz szót/kifejezést kihagyja. (új, már benne volt, kimaradt) */
@@ -58,13 +78,15 @@ object WordStore {
         val sb = StringBuilder()
         for (ln in text.lines()) {
             if (ln.isBlank()) continue
-            val p = parseLine(ln)
-            if (p == null) { bad++; continue }
-            if (keys.add(p.first.lowercase())) {
-                sb.append(p.first).append('\t').append(p.second).append('\n')
-                added++
-            } else {
-                dup++
+            val items = parseLine(ln)
+            if (items.isEmpty()) { bad++; continue }
+            for (p in items) {
+                if (keys.add(p.first.lowercase())) {
+                    sb.append(p.first).append('\t').append(p.second).append('\n')
+                    added++
+                } else {
+                    dup++
+                }
             }
         }
         if (added > 0) file(ctx).appendText(sb.toString())
