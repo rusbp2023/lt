@@ -97,6 +97,7 @@ class MainActivity : Activity() {
             btn("Megosztás") { share() },
             btn("TXT") { exportTxt() }
         )
+        row(btn("Szólista") { startActivity(Intent(this, WordListActivity::class.java)) })
         row(btn("Törlés") {
             CaptionService.clear(this)
             selected.clear()
